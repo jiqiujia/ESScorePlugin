@@ -10,17 +10,37 @@ import org.elasticsearch.search.lookup.IndexField;
 import org.elasticsearch.search.lookup.LeafSearchLookup;
 import org.elasticsearch.search.lookup.SearchLookup;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
-public class GoodsDescriptionScorePlugin extends Plugin implements ScriptPlugin {
+public class GoodsDescriptionScorePluginV2 extends Plugin implements ScriptPlugin {
+
+    private static Set<String> customDictionary = new HashSet<>();
+
     @Override
     public ScriptEngineService getScriptEngineService(Settings settings) {
         return new MyExpertScriptEngine();
     }
 
     private static class MyExpertScriptEngine implements ScriptEngineService {
+        static {
+            BufferedReader reader = new BufferedReader(new InputStreamReader(
+                    MyExpertScriptEngine.class.getResourceAsStream("/customDictionary.txt")));
+            try {
+                String line = "";
+                while ((line = reader.readLine()) != null) {
+                    customDictionary.add(line.trim());
+                }
+            }catch (IOException e){
+                e.printStackTrace();
+            }
+        }
+
         @Override
         public String getType() {
             return "expert_scripts";
@@ -28,7 +48,7 @@ public class GoodsDescriptionScorePlugin extends Plugin implements ScriptPlugin 
 
         @Override
         public Object compile(String scriptName, String scriptSource, Map<String, String> params) {
-            if ("match_sum".equals(scriptSource)) {
+            if ("match_sum_v2".equals(scriptSource)) {
                 return scriptSource;
             }
             throw new IllegalArgumentException("Unknown script name " + scriptSource);
@@ -91,9 +111,12 @@ public class GoodsDescriptionScorePlugin extends Plugin implements ScriptPlugin 
 //                            int oriLen = oriContent.get(0).length();
                             Double cate_score = Double.valueOf(leafLookup.doc().get("cate_score").getValues().get(0).toString());
                             int oriLen = 0;
+                            int tagNum = 0;
                             List<String> segContent = (List<String>)leafLookup.doc().get(fieldname).getValues();
                             for(String tmp : segContent){
                                 oriLen += tmp.length();
+                                if (customDictionary.contains(tmp))
+                                    tagNum += 1;
                             }
 //                            for (String query : terms){
 //                                if (segContent.contains(query)){
@@ -106,31 +129,20 @@ public class GoodsDescriptionScorePlugin extends Plugin implements ScriptPlugin 
                              * 获取document中字段内容
                              */
                             IndexField indexField = leafLookup.indexLookup().get(fieldname);
-                            //int numDocs = leafLookup.indexLookup().numDocs();
-                            int hitTagCnt = 0;
+                            int hitNum = 0;
                             for(String query : terms){
                                 try{
-                                    double df = indexField.get(query).df();
-                                    if (df > 1)
-                                        values += 0.5;
-                                    else
-                                        values += df;
+                                    double tf = indexField.get(query).tf();
+                                    if (tf>=1) {    // 防止为NaN报错
+                                        values += 1.0 / tf;
+                                        hitNum += tf;
+                                    }
                                 }catch (Exception e){
                                     e.printStackTrace();
                                 }
-//                                double idf = 0;
-//                                try {
-//                                    idf = indexField.get(query).df();
-//                                    if (idf<=0)
-//                                        idf = 1;
-//                                    idf = Math.log(numDocs / idf) * indexField.get(query).tf();
-//                                } catch (Exception e) {
-//                                    idf = 1;
-//                                    e.printStackTrace();
-//                                }
-//                                values += idf * length  / (Math.abs(length - oriLen) + 1);
                             }
-                            values = values * cate_score * (1 - (Math.abs(length - oriLen)/length));
+
+                            values = values * cate_score * (1 - (Math.abs(length - oriLen)/length)) - (tagNum - hitNum);
                             return values;
                         }
                     };

@@ -11,10 +11,9 @@ import org.elasticsearch.search.lookup.LeafSearchLookup;
 import org.elasticsearch.search.lookup.SearchLookup;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.Map;
 
-public class GoodsDescriptionScorePlugin extends Plugin implements ScriptPlugin {
+public class GoodsDescriptionScorePluginV3 extends Plugin implements ScriptPlugin {
     @Override
     public ScriptEngineService getScriptEngineService(Settings settings) {
         return new MyExpertScriptEngine();
@@ -28,7 +27,7 @@ public class GoodsDescriptionScorePlugin extends Plugin implements ScriptPlugin 
 
         @Override
         public Object compile(String scriptName, String scriptSource, Map<String, String> params) {
-            if ("match_sum".equals(scriptSource)) {
+            if ("match_sum_v3".equals(scriptSource)) {
                 return scriptSource;
             }
             throw new IllegalArgumentException("Unknown script name " + scriptSource);
@@ -44,7 +43,8 @@ public class GoodsDescriptionScorePlugin extends Plugin implements ScriptPlugin 
             final String[] terms;
             final String fieldname;
 //            final String oriFieldName;
-            final int length;
+            final int lengthThres;
+            final double cateScoreThres;
             if (vars == null || !vars.containsKey("terms")) {
                 throw new IllegalArgumentException("Missing parameter [terms]");
             } else {
@@ -66,9 +66,14 @@ public class GoodsDescriptionScorePlugin extends Plugin implements ScriptPlugin 
             if (!vars.containsKey("length")) {
                 throw new IllegalArgumentException("Missing parameter [length]");
             } else {
-                length = (Integer) vars.get("length");
+                lengthThres = (Integer) vars.get("length");
             }
 
+            if (!vars.containsKey("cate_score")) {
+                throw new IllegalArgumentException("Missing parameter [cate_score]");
+            } else {
+                cateScoreThres = (Integer) vars.get("cate_score");
+            }
             return new SearchScript() {
 
                 @Override
@@ -87,51 +92,34 @@ public class GoodsDescriptionScorePlugin extends Plugin implements ScriptPlugin 
                         @Override
                         public double runAsDouble() {
                             double values = 0;
-//                            List<String> oriContent = (List<String>)leafLookup.doc().get(oriFieldName).getValues();
-//                            int oriLen = oriContent.get(0).length();
                             Double cate_score = Double.valueOf(leafLookup.doc().get("cate_score").getValues().get(0).toString());
-                            int oriLen = 0;
-                            List<String> segContent = (List<String>)leafLookup.doc().get(fieldname).getValues();
-                            for(String tmp : segContent){
-                                oriLen += tmp.length();
-                            }
-//                            for (String query : terms){
-//                                if (segContent.contains(query)){
-//                                    values += 1;
-//                                }
-//                            }
-//                            values = values * cate_score * 100 + length / (Math.abs(length - oriLen) + 1);
+                            if (cate_score < cateScoreThres)
+                                return 0;
+                            int length = Integer.valueOf(leafLookup.doc().get("len").getValues().get(0).toString());
+                            if (length < lengthThres)
+                                return 0;
 
                             /**
                              * 获取document中字段内容
                              */
                             IndexField indexField = leafLookup.indexLookup().get(fieldname);
-                            //int numDocs = leafLookup.indexLookup().numDocs();
-                            int hitTagCnt = 0;
+                            int hitNum = 0;
                             for(String query : terms){
                                 try{
-                                    double df = indexField.get(query).df();
-                                    if (df > 1)
-                                        values += 0.5;
-                                    else
-                                        values += df;
+                                    double tf = indexField.get(query).tf();
+                                    if (tf>=1) {    // 防止为NaN报错
+                                        values += 1.0 / tf;
+                                        hitNum += tf;
+                                    }
                                 }catch (Exception e){
                                     e.printStackTrace();
                                 }
-//                                double idf = 0;
-//                                try {
-//                                    idf = indexField.get(query).df();
-//                                    if (idf<=0)
-//                                        idf = 1;
-//                                    idf = Math.log(numDocs / idf) * indexField.get(query).tf();
-//                                } catch (Exception e) {
-//                                    idf = 1;
-//                                    e.printStackTrace();
-//                                }
-//                                values += idf * length  / (Math.abs(length - oriLen) + 1);
                             }
-                            values = values * cate_score * (1 - (Math.abs(length - oriLen)/length));
-                            return values;
+
+                            // TODO: NotSerializableExceptionWrapper: unsupported_operation_exception: size() not supported!
+//                                long oriLen = indexField.sumttf() * 2;
+                            //values = values * cate_score * (1 - (Math.abs(length - oriLen)/length)) - (oriLen/3 - hitNum);
+                            return values * cate_score;
                         }
                     };
                 }
